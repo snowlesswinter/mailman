@@ -2,3 +2,8 @@
 /*.sdf
 /mailman/*.user
 /libcurl/curl/lib/*.user
+
+/*.suo
+/ipch
+
+/*.opensdf
