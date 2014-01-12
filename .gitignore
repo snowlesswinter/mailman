@@ -1,0 +1,4 @@
+/build
+/*.sdf
+/mailman/*.user
+/libcurl/curl/lib/*.user
