@@ -8,3 +8,4 @@
 
 /*.opensdf
 /cryptopp/*.user
+/cryptopp/adhoc.cpp.copied
