@@ -95,7 +95,7 @@ unsigned int Dispatcher::ThreadProcStatic(void* param)
 }
 
 extern std::string GetPublicIP();
-extern void SendMail(const std::string& message);
+extern void SendMail(const std::string& subject, const std::string& message);
 
 unsigned int Dispatcher::ThreadProc()
 {
@@ -103,7 +103,7 @@ unsigned int Dispatcher::ThreadProc()
     while (!quit_) {
         //ReadMail();
         const std::string ip_addr_text = GetPublicIP();
-        SendMail("ip updated: " + ip_addr_text);
+        SendMail("Komm, Freunde!", "ip updated: " + ip_addr_text);
 
         const int interval = 30 * 60 * 1000; // 30 minutes.
         ::WaitForSingleObject(quit_event_.get(), interval);

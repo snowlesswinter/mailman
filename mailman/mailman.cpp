@@ -1,3 +1,4 @@
+#include <cassert>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -7,6 +8,11 @@
 #include <windows.h>
 
 #include "curl/curl.h"
+#include "cryptopp/aes.h"
+#include "cryptopp/base64.h"
+#include "cryptopp/filters.h"
+#include "cryptopp/modes.h"
+#include "cryptopp/secblock.h"
 #include "dispatcher.h"
 
 using std::cin;
@@ -18,55 +24,6 @@ struct UploadInfo
     std::vector<std::string> upload_text;
     int current_index;
 };
-
-std::string Base64Encode(const std::string& source)
-{
-    static const char* base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-      unsigned char char_array_3[3], char_array_4[4];
-      int i = 0, j = 0;
-  
-      std::string result(2000, '\0');
-      int len = source.length() + 1;
-      char* chsrc = new char[len];
-      memcpy(chsrc, &source[0], len - 1);
-      chsrc[len - 1] = '\0';
-      char* chdes = &result[0];
-      while(len--)
-      {
-            char_array_3[i++] = *(chsrc++);
-            if(3 == i)
-            {
-                  char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
-                  char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
-                  char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
-                  char_array_4[3] = char_array_3[2] & 0x3f;
-                  for(i = 0; i < 4; i++)
-                        *(chdes+i) = base64_chars[char_array_4[i]];
-     
-                  i = 0;
-                 chdes += 4;
-            }
-      }
-      if(i)
-      {
-             for(j = i; j < 3; j++)
-             char_array_3[j] = '\0';
-   
-            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
-            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
-            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
-            char_array_4[3] = char_array_3[2] & 0x3f;
-   
-            for(j = 0; j < (i+1); j++)
-                  *(chdes++) = base64_chars[char_array_4[j]];
-    
-            while((3 > i++))
-                  *(chdes++) = '=';
-      }
-  
-      *chdes = '\0';
-      return result.substr(0, strlen(&result[0]));
-}
 
 size_t WriteCallback(const void* buf, size_t size, size_t count,
                      void* user_param)
@@ -135,7 +92,9 @@ std::vector<std::string> GetIndices(const std::vector<std::string>& data_pieces)
         if (i->length() < 1)
             continue;
 
-        result[std::distance(data_pieces.begin(), i)] = i->substr(0, 1);
+        const int pos = i->find(' ');
+        if (pos != i->npos)
+            result[std::distance(data_pieces.begin(), i)] = i->substr(0, pos);
     }
 
     return std::move(result);
@@ -233,7 +192,10 @@ std::string BuildSender(const std::string& sender)
 
 std::string BuildRecipient(const std::string& recipient)
 {
-    return "To: " + recipient + " <" + recipient + ">\r\n";
+    const int pos = recipient.find('@');
+    const std::string name =
+        pos != recipient.npos ? recipient.substr(0, pos) : recipient;
+    return "To: " + name + " <" + recipient + ">\r\n";
 }
 
 std::string BuildSubject(const std::string& subject)
@@ -241,15 +203,101 @@ std::string BuildSubject(const std::string& subject)
     return "Subject: " + subject + "\r\n";
 }
 
-std::string BuildMessageID()
+bool LoadKey(CryptoPP::SecByteBlock* key_block)
+{
+    assert(key_block);
+    if (!key_block)
+        return false;
+
+    std::string local_dir = GetLocalDirectory();
+    if (local_dir.empty())
+        return false;
+
+    std::string key_file_path = local_dir += "config\\key";
+    std::ifstream key_file(key_file_path.c_str(), std::ios::binary);
+    if (key_file.bad() || key_file.fail())
+        return false;
+    
+    key_file.seekg(0, std::ios::end);
+    const int file_size = static_cast<int>(key_file.tellg());
+    key_file.seekg(0);
+
+    // The source data must be initialized to 0.
+    memset(key_block->BytePtr(), 0, key_block->size());
+
+    CryptoPP::SecByteBlock buf(*key_block);
+    byte* data_ptr = buf.BytePtr();
+    int data_remaining = file_size;
+    while (data_remaining >= static_cast<int>(buf.size())) {
+        key_file.read(reinterpret_cast<char*>(data_ptr), buf.size());
+        byte* temp_data = key_block->BytePtr();
+        for (int i = 0; i < static_cast<int>(buf.size()); i++)
+            temp_data[i] = data_ptr[i] ^ temp_data[i];
+
+        data_remaining -= buf.size();
+    }
+
+    if (data_remaining > 0) {
+        key_file.read(reinterpret_cast<char*>(data_ptr), data_remaining);
+        byte* temp_data = key_block->BytePtr();
+        for (int i = 0; i < data_remaining; i++)
+            temp_data[i] = data_ptr[i] ^ temp_data[i];
+    }
+
+    return true;
+}
+
+std::vector<byte> BuildIV(const CryptoPP::SecByteBlock& key)
+{
+    std::vector<byte> result(CryptoPP::AES::BLOCKSIZE);
+    if (key.empty())
+        return std::move(result);
+
+    for (auto i = result.begin(); i != result.end(); i++)
+        *i = ~key.BytePtr()[std::distance(result.begin(), i) % key.size()];
+
+    return std::move(result);
+}
+
+std::string EncryptMessage(const std::string& message)
+{
+    CryptoPP::SecByteBlock key(0, CryptoPP::AES::DEFAULT_KEYLENGTH);
+    if (!LoadKey(&key))
+        return std::string();
+
+    std::vector<byte> iv = BuildIV(key);
+
+    std::string cipher;
+    try {
+        CryptoPP::StringSink* string_sink(new CryptoPP::StringSink(cipher));
+        CryptoPP::Base64Encoder* b64_enc(
+            new CryptoPP::Base64Encoder(string_sink));
+        CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption aes(key, key.size(),
+                                                          &iv[0]);
+        CryptoPP::StreamTransformationFilter* trans(
+            new CryptoPP::StreamTransformationFilter(aes, b64_enc));
+        CryptoPP::StringSource source(message, true, trans);
+    } catch (const CryptoPP::Exception& e) {
+        cout << e.what() << endl;
+    }
+
+    return cipher;
+}
+
+std::string BuildMessageID(const std::string& sender)
 {
     SYSTEMTIME sys_time;
     ::GetLocalTime(&sys_time);
 
+    // Extract the domain name of the sender.
+    const int pos = sender.find('@');
+    const std::string domain_name =
+        pos != sender.npos ? sender.substr(pos, -1) : "";
+
     std::stringstream ss;
     ss << sys_time.wYear << sys_time.wMonth << sys_time.wDay << sys_time.wHour
         << sys_time.wMinute << sys_time.wSecond << sys_time.wMilliseconds;
-    return "Message-ID: <" + ss.str() + "@sina.com>\r\n";
+    return "Message-ID: <" + ss.str() + domain_name + ">\r\n";
 }
 
 std::string BuildSignature(const std::string& signature)
@@ -259,78 +307,26 @@ std::string BuildSignature(const std::string& signature)
 
 std::vector<std::string> BuildPayloadText(const std::string& sender,
                                           const std::string& recipient,
+                                          const std::string& subject,
                                           const std::string& message)
 {
     const std::string payload_text[] = {
         BuildSendingDate(),
         BuildSender(sender),
         BuildRecipient(recipient),
-        BuildSubject(message),
+        BuildSubject(subject),
         "X-Priority: 3\r\n",
         "X-Has-Attach: no\r\n",
         "X-Mailer: libcurl\r\n",
         "Mime-Version: 1.0\r\n",
-        BuildMessageID(),
-        "Content-Type: multipart/alternative;\r\n",
-        "\tboundary=\"----=_2938sci3847afa8rqoi384273427426dk388_=----\"\r\n",
+        BuildMessageID(sender),
+
+        "Content-Type: text/plain; charset=UTF-8; format=flowed\r\n",
+        "Content-Transfer-Encoding: 7bit\r\n",
         "\r\n",
-        "This is a multi-part message in MIME format.\r\n",
+        EncryptMessage(message),
         "\r\n",
-        "----=_2938sci3847afa8rqoi384273427426dk388_=----\r\n",
-        "Content-Type: text/plain;\r\n",
-        "\tcharset=\"GB2312\"\r\n",
-        "Content-Transfer-Encoding: base64\r\n",
-        "\r\n",
-        Base64Encode(message) + "\r\n",
-        "\r\n",
-        "----=_2938sci3847afa8rqoi384273427426dk388_=----\r\n",
-        "Content-Type: text/plain;\r\n",
-        "\tcharset=\"GB2312\"\r\n",
-        "Content-Transfer-Encoding: base64\r\n",
-        "\r\n",
-        "1eLKx9K7uPa3x7Oj1tjSqrXEz/vPog==\r\n",
-        "\r\n",
-//         "----=_2938sci3847afa8rqoi384273427426dk388_=----\r\n",
-//         "Content-Type: text/html;\r\n",
-//         "\tcharset=\"GB2312\"\r\n",
-//         "Content-Transfer-Encoding: quoted-printable\r\n",
-//         "\r\n",
-//         "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\r\n",
-//         "<HTML><HEAD>\r\n",
-//         "<META content=3D\"text/html; charset=3Dgb2312\" http-equiv=3DContent-Type>\r\n",
-//         "<STYLE>\r\n",
-//         "BLOCKQUOTE {\r\n",
-//         ".MARGIN-BOTTOM: 0px; MARGIN-LEFT: 2em; MARGIN-TOP: 0px\r\n",
-//         "}\r\n",
-//         "OL {\r\n",
-//         ".MARGIN-BOTTOM: 0px; MARGIN-TOP: 0px\r\n",
-//         "}\r\n",
-//         "UL {\r\n",
-//         ".MARGIN-BOTTOM: 0px; MARGIN-TOP: 0px\r\n",
-//         "}"
-//         "P {\r\n",
-//         ".MARGIN-BOTTOM: 0px; MARGIN-TOP: 0px\r\n",
-//         "}\r\n",
-//         "BODY {\r\n",
-//         ".FONT-SIZE: 10.5pt; FONT-FAMILY: =CE=A2=C8=ED=D1=C5=BA=DA; COLOR: #000000;=\r\n",
-//         " LINE-HEIGHT: 1.5\r\n",
-//         "}\r\n",
-//         "</STYLE>\r\n",
-//         "\r\n",
-//         "<META name=3DGENERATOR content=3D\"MSHTML 11.00.9600.16476\"></HEAD>\r\n",
-//         "<BODY style=3D\"MARGIN: 10px\">\r\n",
-//         "<DIV>sdiilei 9894ljjkj</DIV>\r\n",
-//         "<DIV>&nbsp;</DIV>\r\n",
-//         "<HR style=3D\"HEIGHT: 1px; WIDTH: 210px\" align=3Dleft color=3D#b5c4df SIZE=\r\n",
-//         "=3D1>\r\n",
-//         "\r\n",
-//         "<DIV><SPAN>\r\n",
-//         "<DIV style=3D\"FONT-SIZE: 10pt; FONT-FAMILY: verdana; MARGIN: 10px\">\r\n",
-//         "<DIV>\r\n",
-//         BuildSignature(sender),
-//         "</DIV></DIV></SPAN></DIV></BODY></HTML>\r\n",
-//         "\r\n",
-        "----=_2938sci3847afa8rqoi384273427426dk388_=----\r\n",
+
         "\r\n.\r\n",
         ""
     };
@@ -350,7 +346,7 @@ std::vector<std::string> BuildPayloadText(const std::string& sender,
 size_t ReadPayload(void* buf, size_t size, size_t nmemb, void* user_param)
 {
     UploadInfo* upload_info = reinterpret_cast<UploadInfo*>(user_param);
-    if ((size == 0) || (nmemb == 0) || ((size*nmemb) < 1)) {
+    if ((size == 0) || (nmemb == 0) || ((size * nmemb) < 1)) {
         return 0;
     }
 
@@ -365,7 +361,7 @@ size_t ReadPayload(void* buf, size_t size, size_t nmemb, void* user_param)
     return 0;
 }
 
-void SendMail(const std::string& message)
+void SendMail(const std::string& subject, const std::string& message)
 {
     std::string smtp_url;
     std::string pop3_url;
@@ -405,7 +401,7 @@ void SendMail(const std::string& message)
         curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
 
         UploadInfo upload_info = {
-            BuildPayloadText(user, recipient, message), 0
+            BuildPayloadText(user, recipient, subject, message), 0
         };
         curl_easy_setopt(curl, CURLOPT_READDATA, &upload_info);
 
