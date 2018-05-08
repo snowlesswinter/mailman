@@ -1,4 +1,5 @@
 import urllib.request
+import re
 
 def get_public_ip_in_iframe(url):
     print('iframe:', url)
@@ -9,7 +10,7 @@ def get_public_ip_in_iframe(url):
     hint = '['
     pos_start = raw_text.find(hint) + len(hint)
     pos_end = raw_text[pos_start:].find(']')
-    return raw_text[pos_start : pos_start + pos_end]
+    return re.findall(r'\[\d+\.\d+\.\d+\.\d+\]', raw_text)[0][1:-1]
 
 def get_public_ip():
     url = 'http://ip138.com'
