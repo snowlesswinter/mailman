@@ -1,11 +1,2 @@
-/build
-/*.sdf
-/mailman/*.user
-/libcurl/curl/lib/*.user
-
-/*.suo
-/ipch
-
-/*.opensdf
-/cryptopp/*.user
-/cryptopp/adhoc.cpp.copied
+/*.iml
+/.idea
