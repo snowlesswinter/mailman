@@ -44,10 +44,9 @@ def publish(config, mail):
     index = repo.index
     index.add([mail_file_path])
     diff = index.diff('HEAD')
-    if len(diff) == 0:
-        return
+    if len(diff) > 0: # We will make a heartbeat anyway.
+        print('new ip encountered')
 
-    print('new ip encountered')
     author = git.Actor('X', 'x@unknown.com')
     committer = git.Actor('X', 'x@unknown.com')
     index.commit(str(datetime.datetime.now()), author=author, committer=committer)
@@ -63,7 +62,6 @@ def main_loop(config):
         print('mail: ', mail)
 
         publish(config, mail)
-
         time.sleep(60 * 15)
 
 def main():
