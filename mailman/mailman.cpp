@@ -247,14 +247,23 @@ bool LoadKey(CryptoPP::SecByteBlock* key_block)
     return true;
 }
 
-std::vector<byte> BuildIV(const CryptoPP::SecByteBlock& key)
+// Build a random iv to make the encrypted text lines look more different with
+// repeated sub-strings.
+std::vector<byte> BuildIV()
 {
-    std::vector<byte> result(CryptoPP::AES::BLOCKSIZE);
-    if (key.empty())
-        return std::move(result);
+    // We will expand the buffer length to a multiply of |kBase64ByteBase| so
+    // that to avoid "=" appearing at the back of IV text. Otherwise, the "="
+    // could tell the readers that "this is a separator of two sections".
+    //
+    // When we decode it, just simply discard the redundant characters.
+    const int kBase64ByteBase = 3;
+    int buf_size = ((CryptoPP::AES::BLOCKSIZE + kBase64ByteBase - 1)
+        / kBase64ByteBase) * kBase64ByteBase;
 
+    srand(static_cast<unsigned int>(time(0)));
+    std::vector<byte> result(buf_size);
     for (auto i = result.begin(); i != result.end(); i++)
-        *i = ~key.BytePtr()[std::distance(result.begin(), i) % key.size()];
+        *i = rand() % 255;
 
     return std::move(result);
 }
@@ -265,7 +274,7 @@ std::string EncryptMessage(const std::string& message)
     if (!LoadKey(&key))
         return std::string();
 
-    std::vector<byte> iv = BuildIV(key);
+    std::vector<byte> iv = BuildIV();
 
     std::string cipher;
     try {
@@ -277,6 +286,16 @@ std::string EncryptMessage(const std::string& message)
         CryptoPP::StreamTransformationFilter* trans(
             new CryptoPP::StreamTransformationFilter(aes, b64_enc));
         CryptoPP::StringSource source(message, true, trans);
+
+        // Encode iv with Base64 encoder and catenate to the cipher.
+        std::string iv_b64;
+        CryptoPP::StringSink* iv_str_sink(new CryptoPP::StringSink(iv_b64));
+        CryptoPP::Base64Encoder* b64_enc2(
+            new CryptoPP::Base64Encoder(
+                iv_str_sink, false/* We don't need '\n' at the back. */));
+        CryptoPP::ArraySource source2(&iv[0], iv.size(), true, b64_enc2);
+
+        cipher = iv_b64 + cipher;
     } catch (const CryptoPP::Exception& e) {
         cout << e.what() << endl;
     }
