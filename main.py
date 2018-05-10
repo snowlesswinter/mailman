@@ -1,10 +1,11 @@
-from Crypto.Cipher import AES
+from codec import build_mail
 
-import base64
+import datetime
 import git
 import json
 import os.path
 import re
+import time
 import urllib.request
 
 def get_public_ip_in_iframe(url):
@@ -13,9 +14,6 @@ def get_public_ip_in_iframe(url):
     res = urllib.request.urlopen(req)
     page = res.read()
     raw_text = str(page)
-    hint = '['
-    pos_start = raw_text.find(hint) + len(hint)
-    pos_end = raw_text[pos_start:].find(']')
     return re.findall(r'\[\d+\.\d+\.\d+\.\d+\]', raw_text)[0][1:-1]
 
 def get_public_ip():
@@ -36,23 +34,7 @@ def load_config():
 
     raise
 
-def build_mail(ip, key):
-    nonce = b'\xde\xad\xbe\xef'
-    cipher = AES.new(key.encode('utf-8'), AES.MODE_EAX, nonce=nonce)
-    encoded_ip =  base64.b64encode(cipher.encrypt(ip.encode('utf-8')))
-    return encoded_ip.decode('utf-8')
-
-    #cipher1 = AES.new(key.encode('utf-8'), AES.MODE_EAX, nonce=nonce)
-    #vv = cipher1.decrypt(base64.b64decode(encoded))
-
-def main():
-    config = load_config()
-
-    ip = get_public_ip()
-    print('ip address: ', ip)
-    mail = build_mail(ip, config['key'])
-    print('mail: ', mail)
-
+def publish(config, mail):
     repo = git.Repo(config['mailbox_path'])
 
     mail_file_path = os.path.join(repo.working_dir, config['mail_file_name'])
@@ -68,7 +50,25 @@ def main():
     print('new ip encountered')
     author = git.Actor('X', 'x@unknown.com')
     committer = git.Actor('X', 'x@unknown.com')
-    index.commit('m', author=author, committer=committer)
+    index.commit(str(datetime.datetime.now()), author=author, committer=committer)
+
+    origin = repo.remote('origin')
+    origin.push()
+
+def main_loop(config):
+    while True:
+        ip = get_public_ip()
+        print('ip address: ', ip)
+        mail = build_mail(ip, config['key'])
+        print('mail: ', mail)
+
+        publish(config, mail)
+
+        time.sleep(60 * 15)
+
+def main():
+    config = load_config()
+    main_loop(config)
 
 if __name__ == '__main__':
     main()
